@@ -3,6 +3,7 @@ import numpy as np
 from astropy.visualization import make_lupton_rgb
 from slsim.ImageSimulation.image_simulation import simulate_image
 from slsim.ImageSimulation.roman_image_simulation import simulate_roman_image
+from astropy.visualization import ZScaleInterval
 
 
 class LensingPlots(object):
@@ -86,8 +87,8 @@ class LensingPlots(object):
         defaults = {
             "Roman": {
                 "minimum": [np.min(image_r), np.min(image_g), np.min(image_b)],
-                "stretch": 8,
-                "Q": 10,
+                "stretch": 2,
+                "Q": 20,
             },
             "Other": {
                 "minimum": 0,
@@ -114,6 +115,7 @@ class LensingPlots(object):
         kwargs_lens_cut=None,
         single_band=False,
         lens_class_list=None,
+        scaleup=1,
         **rgb_kwargs,
     ):
         """Method to generate and display a grid of simulated gravitational
@@ -147,6 +149,7 @@ class LensingPlots(object):
         else:
             make_image = simulate_image
         idx = 0
+        zinterval = ZScaleInterval()
         for i in range(n_horizont):
             for j in range(n_vertical):
                 ax = axes[j, i]
@@ -172,7 +175,20 @@ class LensingPlots(object):
                     image_rgb = self.rgb_image(
                         current_lens, rgb_band_list, add_noise=add_noise, **rgb_kwargs
                     )
-                    ax.imshow(image_rgb, aspect="equal", origin="lower")
+                    # # Apply zscale to each channel individually if needed
+                    # # or to the combined RGB image (assuming values in 0-1)
+                    # if image_rgb.ndim == 2:  # grayscale
+                    #     vmin, vmax = zinterval.get_limits(image_rgb)
+                    #     ax.imshow(image_rgb, aspect="equal", origin="lower",
+                    #               vmin=vmin, vmax=vmax)
+                    # else:
+                    #     # For 3-channel RGB, scale each channel
+                    #     for c in range(3):
+                    #         vmin, vmax = zinterval.get_limits(image_rgb[..., c])
+                    #         image_rgb[..., c] = np.clip(
+                    #             (image_rgb[..., c] - vmin) / (vmax - vmin), 0, 1
+                    #         )
+                    ax.imshow(image_rgb*scaleup, aspect="equal", origin="lower")
 
                 ax.get_xaxis().set_visible(False)
                 ax.get_yaxis().set_visible(False)
@@ -183,3 +199,88 @@ class LensingPlots(object):
             left=None, bottom=None, right=None, top=None, wspace=0.0, hspace=0.05
         )
         return fig, axes
+
+    # def plot_montage(
+    #     self,
+    #     rgb_band_list,
+    #     add_noise=True,
+    #     n_horizont=1,
+    #     n_vertical=1,
+    #     kwargs_lens_cut=None,
+    #     single_band=False,
+    #     lens_class_list=None,
+    #     brightness_boost=1.0,  # NEW: linear brightness factor
+    #     **rgb_kwargs,
+    # ):
+    #     """Generate and display a grid of simulated gravitational lensing images
+    #        with optional brightness scaling for faint sources.
+    #     """
+    #     if kwargs_lens_cut is None:
+    #         kwargs_lens_cut = {}
+    
+    #     fig, axes = plt.subplots(
+    #         n_vertical, n_horizont, figsize=(n_horizont * 3, n_vertical * 3)
+    #     )
+    
+    #     if self._observatory == "Roman":
+    #         make_image = simulate_roman_image
+    #     else:
+    #         make_image = simulate_image
+    
+    #     idx = 0
+    
+    #     # Flatten axes for easy indexing if only one row/column
+    #     if n_horizont * n_vertical == 1:
+    #         axes = np.array([[axes]])
+    #     elif n_vertical == 1 or n_horizont == 1:
+    #         axes = np.atleast_2d(axes)
+    
+    #     for i in range(n_horizont):
+    #         for j in range(n_vertical):
+    #             ax = axes[j, i]
+    
+    #             # Select lens
+    #             if lens_class_list is not None:
+    #                 current_lens = lens_class_list[idx]
+    #                 idx += 1
+    #             else:
+    #                 current_lens = self._lens_pop.select_lens_at_random(**kwargs_lens_cut)
+    
+    #             # Generate image
+    #             if single_band:
+    #                 image_rgb = make_image(
+    #                     lens_class=current_lens,
+    #                     band=rgb_band_list[0],
+    #                     num_pix=self.num_pix,
+    #                     add_noise=add_noise,
+    #                     observatory=self._observatory,
+    #                     **self._kwargs,
+    #                 )
+    #                 # Apply linear brightness boost
+    #                 display_array = np.sqrt(image_rgb * brightness_boost)
+    #                 ax.imshow(display_array, aspect="equal", origin="lower", cmap="gray")
+    #             else:
+    #                 image_rgb = self.rgb_image(
+    #                     current_lens, rgb_band_list, add_noise=add_noise, **rgb_kwargs
+    #                 )
+    #                 if image_rgb.ndim == 2:  # grayscale
+    #                     display_array = image_rgb * brightness_boost
+    #                     ax.imshow(display_array, aspect="equal", origin="lower", cmap="gray")
+    #                 else:  # RGB
+    #                     display_rgb = np.zeros_like(image_rgb)
+    #                     for c in range(image_rgb.shape[-1]):  # Loop over R, G, B channels
+    #                         display_rgb[..., c] = np.sqrt(
+    #                             np.clip(image_rgb[..., c] * brightness_boost, 0, None)
+    #                         )
+    #                     display_rgb = np.clip(display_rgb, 0, 1)
+    #                     ax.imshow(display_rgb, aspect="equal", origin="lower")
+    
+    #             ax.get_xaxis().set_visible(False)
+    #             ax.get_yaxis().set_visible(False)
+    #             ax.autoscale(False)
+    
+    #     fig.tight_layout()
+    #     fig.subplots_adjust(
+    #         left=None, bottom=None, right=None, top=None, wspace=0.0, hspace=0.05
+    #     )
+    #     return fig, axes

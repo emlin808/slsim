@@ -1,12 +1,13 @@
 import matplotlib.pyplot as plt
+from matplotlib import markers
 from astropy.visualization import ZScaleInterval
 import random
 import numpy as np
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from slsim.Microlensing.magmap import MagnificationMap
 
-"""This module contains various plotting definations."""
 
+"""This module contains various plotting definations."""
 
 def create_image_montage_from_image_list(
     num_rows,
@@ -19,8 +20,8 @@ def create_image_montage_from_image_list(
 ):
     """Creates an image montage from an image list.
 
-    :param num_rows: number of images to display horizontally
-    :param num_cols: number of images to display vertically
+    :param num_rows: number of images to display vertically
+    :param num_cols: number of images to display horizontally
     :param images: list of images
     :param time: array of observation time for point source images. If
         None, considers static case.
@@ -29,22 +30,13 @@ def create_image_montage_from_image_list(
     :param image_type: type of the provided image. It could be 'dp0' or
         any other name.
     :param image_center: center of the source images.
-    :type image_center: array. eg: for two image, it should be like
-        np.array([[13.71649063, 13.09556121], [16.69249276,
-        17.78106655]])
-    :return: image montage of given images.
+    :type image_center: array. e.g. np.array([[x1, y1], [x2, y2]])
+    :return: figure object with the montage
     """
 
-    # Collect min and max values from all images
-    all_min = []
-    all_max = []
-    for image in images:
-        all_min.append(np.min(image))
-        all_max.append(np.max(image))
-    global_min = min(all_min)
-    global_max = max(all_max)
+    global_min = min([np.min(img) for img in images])
+    global_max = max([np.max(img) for img in images])
 
-    # If band is one string, extend to list
     if isinstance(band, str):
         band = [band] * len(images)
 
@@ -52,54 +44,61 @@ def create_image_montage_from_image_list(
 
     for i in range(num_rows):
         for j in range(num_cols):
-            if i * num_cols + j < len(images):
-                image = images[i * num_cols + j]
+            idx = i * num_cols + j
+            if idx >= len(images):
+                axes[i, j].axis("off")
+                continue
 
-                if image_type == "dp0":
-                    zscale = ZScaleInterval()
-                    vmin, vmax = zscale.get_limits(image)
-                    axes[i, j].imshow(
-                        image, origin="lower", cmap="gray", vmin=vmin, vmax=vmax
+            image = images[idx]
+
+            # Show image with zscale if dp0 type, else global min/max
+            if image_type == "dp0":
+                zscale = ZScaleInterval()
+                vmin, vmax = zscale.get_limits(image)
+                im = axes[i, j].imshow(image, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
+            else:
+                im = axes[i, j].imshow(image, origin="lower", cmap="viridis", vmin=global_min, vmax=global_max)
+
+            axes[i, j].axis("off")
+
+            # Add colorbar only to the first subplot
+            if idx == 0:
+                cbar = plt.colorbar(im, ax=axes[i, j], fraction=0.046, pad=0.04)
+                cbar.set_label("Flux")
+
+            if time is not None:
+                axes[i, j].annotate(
+                    f"Time: {round(time[idx],2)} days",
+                    xy=(0, 1), xycoords="axes fraction",
+                    xytext=(5, -5), textcoords="offset points",
+                    color="white", fontsize=10, va="top", ha="left"
+                )
+
+            if band is not None:
+                axes[i, j].annotate(
+                    f"Band: {band[idx]}",
+                    xy=(0, 0), xycoords="axes fraction",
+                    xytext=(5, 5), textcoords="offset points",
+                    color="white", fontsize=10, va="bottom", ha="left"
+                )
+
+            # Plot image centers if provided
+            if image_center is not None:
+                for k in range(len(image_center)):
+                    axes[i, j].scatter(
+                        image_center[k][0]+2,
+                        image_center[k][1],
+                        marker=markers.TICKRIGHT, color="white", s=30
                     )
-                else:
-                    axes[i, j].imshow(
-                        image, origin="lower", vmin=global_min, vmax=global_max
+                    axes[i, j].scatter(
+                        image_center[k][0],
+                        image_center[k][1]+2,
+                        marker=markers.TICKUP, color="white", s=30
                     )
-                axes[i, j].axis("off")  # Turn off axis labels
-                if time is not None:
-                    axes[i, j].text(
-                        0.05,
-                        0.95,
-                        f"Time: {round(time[i * num_cols + j],2)} days",
-                        fontsize=10,
-                        color="white",
-                        verticalalignment="top",
-                        horizontalalignment="left",
-                        transform=axes[i, j].transAxes,
-                    )
-                if band is not None:
-                    axes[i, j].text(
-                        0.05,
-                        0.10,
-                        f"Band: {band[i * num_cols + j]}",
-                        fontsize=10,
-                        color="white",
-                        verticalalignment="top",
-                        horizontalalignment="left",
-                        transform=axes[i, j].transAxes,
-                    )
-                if image_center is not None:
-                    for k in range(len(image_center)):
-                        axes[i, j].scatter(
-                            image_center[k][0],
-                            image_center[k][1],
-                            marker="*",
-                            color="red",
-                            s=30,
-                        )
 
     fig.tight_layout()
-    fig.subplots_adjust(wspace=0.0, hspace=0.05)
+    fig.subplots_adjust(wspace=0.2, hspace=0.2)
+
     return fig
 
 
@@ -258,7 +257,6 @@ def plot_magnification_map(magmap_instance, ax=None, plot_magnitude=True, **kwar
                 (magmap_instance.center_y + magmap_instance.half_length_y)
                 / magmap_instance.theta_star,
             ],
-            origin="lower",
             **kwargs,
         )
     else:
@@ -274,7 +272,6 @@ def plot_magnification_map(magmap_instance, ax=None, plot_magnitude=True, **kwar
                 (magmap_instance.center_y + magmap_instance.half_length_y)
                 / magmap_instance.theta_star,
             ],
-            origin="lower",
             **kwargs,
         )
     ax.set_xlabel("$x / \\theta_★$")
