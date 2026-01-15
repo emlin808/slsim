@@ -1,20 +1,29 @@
+import os
 import copy
-
 import pytest
 import numpy as np
-from numpy import testing as npt
-from astropy.cosmology import FlatLambdaCDM
+from copy import deepcopy
 from astropy.table import Table
+from numpy import testing as npt
 from slsim.Lenses.lens import Lens
+from astropy.cosmology import FlatLambdaCDM
 from slsim.Util.param_util import image_separation_from_positions
 from slsim.LOS.los_individual import LOSIndividual
 from slsim.LOS.los_pop import LOSPop
 from slsim.Sources.source import Source
 from slsim.Deflectors.deflector import Deflector
-import os
 
 # import pickle
 from unittest.mock import patch, MagicMock  # Added for mocking
+
+try:
+    import jax
+
+    print(jax.__path__)
+
+    use_jax = True
+except ImportError:
+    use_jax = False
 
 
 class TestLens(object):
@@ -61,6 +70,7 @@ class TestLens(object):
                 # kwargs_variability={"MJD", "ps_mag_i"},  # This line will not be used in
                 # the testing but at least code go through this warning message.
                 cosmo=cosmo,
+                use_jax=use_jax,
             )
             second_brightest_image_cut = {"i": 30}
             if gg_lens.validity_test(
@@ -136,6 +146,7 @@ class TestLens(object):
             los_class=self.los_individual,
             lens_equation_solver="lenstronomy_analytical",
             cosmo=cosmo,
+            use_jax=use_jax,
         )
 
     def test_validity_test(self):
@@ -239,6 +250,7 @@ class TestLens(object):
             source_class=self.source,
             deflector_class=self.deflector,
             cosmo=cosmo,
+            use_jax=use_jax,
         )
         while True:
             gg_lens.validity_test()
@@ -249,6 +261,7 @@ class TestLens(object):
             source_class=self.source,
             deflector_class=self.deflector,
             cosmo=cosmo,
+            use_jax=use_jax,
         )
         while True:
             gg_lens.validity_test()
@@ -288,6 +301,7 @@ class TestLens(object):
                 deflector_class=self.deflector2,
                 lens_equation_solver="lenstronomy_default",
                 cosmo=cosmo,
+                use_jax=use_jax,
             )
             if gg_lens.validity_test():
                 # self.gg_lens = gg_lens
@@ -318,6 +332,7 @@ class TestLens(object):
                 deflector_class=self.deflector3,
                 lens_equation_solver="lenstronomy_default",
                 cosmo=cosmo,
+                use_jax=use_jax,
             )
             if cg_lens.validity_test(max_image_separation=50.0):
                 break
@@ -478,6 +493,7 @@ def pes_lens_instance():
             source_class=source4,
             deflector_class=deflector4,
             cosmo=cosmo,
+            use_jax=use_jax,
         )
         second_brightest_image_cut = {"i": 30}
         if pes_lens.validity_test(
@@ -599,6 +615,7 @@ def lens_instance_with_variability():
         deflector_class=deflector_quasar,
         cosmo=cosmo,
         los_class=los_class,
+        use_jax=use_jax,
     )
 
     return lens_class
@@ -617,26 +634,20 @@ def time_array():
 @pytest.fixture
 def kwargs_microlensing_magmap_settings_test(lens_instance_with_variability):
     """Minimal settings for MagnificationMap for microlensing tests."""
-    # These should be consistent with how MicrolensingLightCurveFromLensModel
-    # would set them up, or use small values for speed if actual map generation is skipped.
-    # The theta_star from the loaded lens_class is the most relevant here.
-    theta_e = lens_instance_with_variability._einstein_radius(0)  # Use actual theta_E
+    theta_e = lens_instance_with_variability._einstein_radius(0)
     return {
-        "theta_star": theta_e * 0.01,  # Example: theta_star as a fraction of theta_E
-        "num_pixels_x": 100,  # Small for speed
+        "theta_star": theta_e * 0.01,
+        "num_pixels_x": 100,
         "num_pixels_y": 100,
-        "half_length_x": 5 * theta_e * 0.01,  # Small region
+        "half_length_x": 5 * theta_e * 0.01,
         "half_length_y": 5 * theta_e * 0.01,
-        # Other params like mass_function can be defaults if not critical for the test's logic
     }
 
 
 @pytest.fixture
-def kwargs_source_gaussian_test(lens_instance_with_variability):
-    source = lens_instance_with_variability.source(0)
+def kwargs_source_gaussian_test():
+    """Minimal settings for a Gaussian source morphology for microlensing."""
     return {
-        "source_redshift": source.redshift,
-        "cosmo": lens_instance_with_variability.cosmo,
         "source_size": 1e-8,  # Very small for point-like behavior
     }
 
@@ -645,11 +656,34 @@ def kwargs_source_gaussian_test(lens_instance_with_variability):
 def kwargs_microlensing_settings(
     kwargs_microlensing_magmap_settings_test, kwargs_source_gaussian_test
 ):
-    """Combines settings for the kwargs_microlensing dictionary."""
+    """Combines settings for the kwargs_microlensing dictionary for Gaussian
+    source."""
     return {
-        "kwargs_MagnificationMap": kwargs_microlensing_magmap_settings_test,
-        "point_source_morphology": "gaussian",  # Assuming Gaussian for simplicity
+        "kwargs_magnification_map": kwargs_microlensing_magmap_settings_test,
+        "point_source_morphology": "gaussian",
         "kwargs_source_morphology": kwargs_source_gaussian_test,
+    }
+
+
+@pytest.fixture
+def kwargs_source_agn_test():
+    """Source morphology settings for an AGN source for microlensing.
+
+    Can be empty as the lens class populates it.
+    """
+    return {}
+
+
+@pytest.fixture
+def kwargs_microlensing_settings_agn(
+    kwargs_microlensing_magmap_settings_test, kwargs_source_agn_test
+):
+    """Combines settings for the kwargs_microlensing dictionary for an AGN
+    source."""
+    return {
+        "kwargs_magnification_map": kwargs_microlensing_magmap_settings_test,
+        "point_source_morphology": "agn",
+        "kwargs_source_morphology": kwargs_source_agn_test,
     }
 
 
@@ -739,8 +773,8 @@ def test_point_source_magnitude_with_microlensing_block(
         # 4. Assertions
         # Check that our internal mock was called correctly
         mock_internal_microlensing_method.assert_called_once_with(
-            band_i,
-            time_array,
+            band=band_i,
+            time=time_array,
             source_index=0,
             kwargs_microlensing=kwargs_microlensing_settings,
         )
@@ -764,9 +798,11 @@ def test_point_source_magnitude_microlensing(
     kwargs_microlensing_settings,
 ):
     """Tests _point_source_magnitude_microlensing by mocking the light curve
-    generator."""
-    source = lens_instance_with_variability.source(0)
-    num_images = lens_instance_with_variability.image_number[0]
+    generator and checking for auto-populated source params."""
+    lens_system = lens_instance_with_variability
+    source_index = 0
+    source = lens_system.source(source_index)
+    num_images = lens_system.image_number[source_index]
 
     if num_images == 0:
         pytest.skip("No lensed images found for this configuration.")
@@ -780,58 +816,191 @@ def test_point_source_magnitude_microlensing(
     mock_ml_lc_instance.generate_point_source_microlensing_magnitudes.return_value = (
         expected_microlensing_delta_mags
     )
-    mock_ml_lc_from_lm_class.return_value = mock_ml_lc_instance  # When Lens calls MicrolensingLightCurveFromLensModel(), it gets our mock
+    # When Lens calls MicrolensingLightCurveFromLensModel(...), it gets our mock instance
+    mock_ml_lc_from_lm_class.return_value = mock_ml_lc_instance
 
+    # Check that the microlensing_model_class attribute is not set before the call
     with pytest.raises(
-        AttributeError, match="MicrolensingLightCurveFromLensModel class is not set."
+        AttributeError,
+        match="MicrolensingLightCurveFromLensModel class is not set.",
     ):
-        _ = lens_instance_with_variability.microlensing_model_class
+        # Accessing as a method now
+        _ = lens_system.microlensing_model_class(source_index=source_index)
 
     # Call the method under test
     try:
-        result_mags = (
-            lens_instance_with_variability._point_source_magnitude_microlensing(
-                band_i,
-                time_array,
-                source_index=0,
-                kwargs_microlensing=kwargs_microlensing_settings,
-            )
+        result_mags = lens_system._point_source_magnitude_microlensing(
+            band_i,
+            time_array,
+            source_index=source_index,
+            kwargs_microlensing=kwargs_microlensing_settings,
         )
     except Exception as e:
         pytest.fail(f"_point_source_magnitude_microlensing raised an exception: {e}")
 
-    # Verify generate_point_source_microlensing_magnitudes was called on the instance
-    mock_ml_lc_instance.generate_point_source_microlensing_magnitudes.assert_called_once()
-    call_kwargs = (
-        mock_ml_lc_instance.generate_point_source_microlensing_magnitudes.call_args.kwargs
+    # Get the actual microlensing parameters from lens class
+    (
+        kappa_star_images,
+        kappa_tot_images,
+        shear_images,
+        shear_angle_images_rad,
+    ) = lens_system._microlensing_parameters_for_image_positions_single_source(
+        band=band_i, source_index=source_index
+    )
+    shear_phi_angle_images_deg = np.degrees(shear_angle_images_rad)
+
+    # Verify the CONSTRUCTOR call on the class
+    mock_ml_lc_from_lm_class.assert_called_once()
+    constructor_kwargs = mock_ml_lc_from_lm_class.call_args.kwargs
+
+    # Prepare the expected kwargs_source_morphology after auto-population
+    expected_source_morphology = kwargs_microlensing_settings[
+        "kwargs_source_morphology"
+    ].copy()
+    expected_source_morphology["source_redshift"] = source.redshift
+    expected_source_morphology["cosmo"] = lens_system.cosmo
+    expected_source_morphology["observing_wavelength_band"] = band_i
+
+    # Update with AGN params because the source is a Quasar and the lens class calls the update method
+    expected_source_morphology = (
+        source._source.update_microlensing_kwargs_source_morphology(
+            expected_source_morphology
+        )
     )
 
-    # Check some key arguments passed to the mocked method
-    np.testing.assert_array_equal(call_kwargs["time"], time_array)
-    assert call_kwargs["source_redshift"] == source.redshift
+    # Check key arguments passed to the constructor
+    assert constructor_kwargs["source_redshift"] == source.redshift
+    assert constructor_kwargs["deflector_redshift"] == lens_system.deflector_redshift
+    np.testing.assert_array_equal(
+        constructor_kwargs["kappa_star_images"], kappa_star_images
+    )
+    np.testing.assert_array_equal(
+        constructor_kwargs["kappa_tot_images"], kappa_tot_images
+    )
+    np.testing.assert_array_equal(constructor_kwargs["shear_images"], shear_images)
+    np.testing.assert_array_equal(
+        constructor_kwargs["shear_phi_angle_images"], shear_phi_angle_images_deg
+    )
+    assert constructor_kwargs["cosmology"] == lens_system.cosmo
     assert (
-        call_kwargs["kwargs_MagnificationMap"]
-        == kwargs_microlensing_settings["kwargs_MagnificationMap"]
-    )  # Corrected key
+        constructor_kwargs["kwargs_magnification_map"]
+        == kwargs_microlensing_settings["kwargs_magnification_map"]
+    )
     assert (
-        call_kwargs["point_source_morphology"]
+        constructor_kwargs["point_source_morphology"]
         == kwargs_microlensing_settings["point_source_morphology"]
     )
-    assert (
-        call_kwargs["kwargs_source_morphology"]
-        == kwargs_microlensing_settings["kwargs_source_morphology"]
+    assert constructor_kwargs["kwargs_source_morphology"] == expected_source_morphology
+
+    # Verify the generate_... method was called on the INSTANCE with the correct time
+    mock_ml_lc_instance.generate_point_source_microlensing_magnitudes.assert_called_once_with(
+        time=time_array
     )
 
-    # check if microlensing_model_class is set correctly
-    microlensing_model_class = lens_instance_with_variability.microlensing_model_class
+    # Check if microlensing_model_class property is set correctly
     assert (
-        microlensing_model_class is not None
-    ), "Microlensing model class should be set."
-    assert microlensing_model_class == mock_ml_lc_instance
+        lens_system.microlensing_model_class(source_index=source_index)
+        is mock_ml_lc_instance
+    )
+
+    # Check if invalid source index raises error
+    invalid_source_index = source_index + 1  # Assuming only one source exists
+    with pytest.raises(
+        AttributeError,
+        match=f"MicrolensingLightCurveFromLensModel class is not set for source index {invalid_source_index}.",
+    ):
+        lens_system.microlensing_model_class(source_index=invalid_source_index)
 
     # The result of _point_source_magnitude_microlensing should be the direct output
     # from the mocked generate_point_source_microlensing_magnitudes
     np.testing.assert_allclose(result_mags, expected_microlensing_delta_mags)
+
+
+@patch("slsim.Microlensing.lightcurvelensmodel.MicrolensingLightCurveFromLensModel")
+def test_point_source_magnitude_microlensing_agn(
+    mock_ml_lc_from_lm_class,
+    lens_instance_with_variability,
+    band_i,
+    time_array,
+    kwargs_microlensing_settings_agn,
+):
+    """Tests _point_source_magnitude_microlensing with AGN morphology and auto-
+    populated AGN params."""
+    lens_system = lens_instance_with_variability
+    source_index = 0
+    source = lens_system.source(source_index)
+
+    # Configure mock and call the method
+    mock_ml_lc_from_lm_class.return_value = MagicMock()
+    lens_system._point_source_magnitude_microlensing(
+        band_i,
+        time_array,
+        source_index=source_index,
+        kwargs_microlensing=kwargs_microlensing_settings_agn,
+    )
+
+    # Get the arguments passed to the constructor of the mocked class
+    constructor_kwargs = mock_ml_lc_from_lm_class.call_args.kwargs
+    final_source_morphology_kwargs = constructor_kwargs["kwargs_source_morphology"]
+
+    # Check that standard parameters were added
+    assert final_source_morphology_kwargs["source_redshift"] == source.redshift
+    assert final_source_morphology_kwargs["cosmo"] == lens_system.cosmo
+    assert final_source_morphology_kwargs["observing_wavelength_band"] == band_i
+
+    # Check that AGN-specific parameters were added from the Source class
+    source_agn_kwargs = source._source.agn_class.kwargs_model
+    agn_params_to_check = [
+        "black_hole_mass_exponent",
+        "inclination_angle",
+        "black_hole_spin",
+        "eddington_ratio",
+    ]
+    for param in agn_params_to_check:
+        assert final_source_morphology_kwargs[param] == source_agn_kwargs[param]
+
+
+@patch("slsim.Microlensing.lightcurvelensmodel.MicrolensingLightCurveFromLensModel")
+def test_point_source_magnitude_microlensing_defaults(
+    mock_ml_lc_from_lm_class,
+    lens_instance_with_variability,
+    band_i,
+    time_array,
+):
+    """Tests _point_source_magnitude_microlensing with defaults
+    (kwargs_microlensing=None).
+
+    Verifies that 'agn' morphology is automatically assigned for QSO
+    sources.
+    """
+    lens_system = deepcopy(lens_instance_with_variability)
+    source_index = 0
+
+    # Ensure the source name is "QSO" so the auto-logic triggers
+    # We force this just in case the fixture mapping is different in the installed slsim version
+    lens_system.source(source_index)._source.name = "QSO"
+
+    # Configure mock
+    mock_ml_lc_from_lm_class.return_value = MagicMock()
+
+    # Call with kwargs_microlensing=None
+    lens_system._point_source_magnitude_microlensing(
+        band_i,
+        time_array,
+        source_index=source_index,
+        kwargs_microlensing=None,
+    )
+
+    # Get constructor args
+    constructor_kwargs = mock_ml_lc_from_lm_class.call_args.kwargs
+
+    # Assert automatic assignment
+    assert constructor_kwargs["point_source_morphology"] == "agn"
+
+    # Assert kwargs_source_morphology was initialized and populated
+    kwargs_morph = constructor_kwargs["kwargs_source_morphology"]
+    assert kwargs_morph["observing_wavelength_band"] == band_i
+    assert kwargs_morph["source_redshift"] == lens_system.source(source_index).redshift
 
 
 ################################################
@@ -890,6 +1059,7 @@ def supernovae_lens_instance():
             source_class=source5,
             deflector_class=deflector5,
             cosmo=cosmo,
+            use_jax=use_jax,
         )
         if supernovae_lens.validity_test():
             supernovae_lens = supernovae_lens
@@ -952,6 +1122,44 @@ class TestDifferentLens(object):
             deflector_type="EPL_SERSIC",
             **self.deflector_dict,
         )
+        self.lens_class_multi_source_plane = Lens(
+            deflector_class=self.deflector6,
+            source_class=[self.source6, self.source6],
+            cosmo=self.cosmo,
+            lens_equation_solver="lenstronomy_general",
+            multi_plane="Source",
+            use_jax=use_jax,
+        )
+        subhalos_table = Table.read(
+            os.path.join(path, "../TestData/subhalos_table.fits"), format="fits"
+        )
+        deflector_dict_nfw = {
+            "halo_mass": 10**14,
+            "concentration": 5,
+            "e1_mass": 0.1,
+            "e2_mass": -0.1,
+            "z": 0.42,
+            "subhalos": subhalos_table,
+        }
+        self.deflector_nfw_cluster = Deflector(
+            deflector_type="NFW_CLUSTER",
+            cored_profile=True,
+            **deflector_dict_nfw,
+        )
+        self.lens_class_nfw_cluster = Lens(
+            deflector_class=self.deflector_nfw_cluster,
+            source_class=self.source6,
+            cosmo=self.cosmo,
+            lens_equation_solver="lenstronomy_analytical",
+        )
+        self.lens_class_nfw_cluster_multi_source_plane = Lens(
+            deflector_class=self.deflector_nfw_cluster,
+            source_class=[self.source6, self.source6],
+            cosmo=self.cosmo,
+            lens_equation_solver="lenstronomy_general",
+            multi_plane="Source",
+            use_jax=use_jax,
+        )
 
     def test_different_setting(self):
         los1 = LOSPop(
@@ -967,6 +1175,7 @@ class TestDifferentLens(object):
                 source_redshift=self.source6.redshift,
                 deflector_redshift=self.deflector6.redshift,
             ),
+            use_jax=use_jax,
         )
         assert gg_lens.external_shear >= 0
         assert isinstance(gg_lens.external_convergence, float)
@@ -986,6 +1195,7 @@ class TestDifferentLens(object):
                 source_redshift=self.source6.redshift,
                 deflector_redshift=self.deflector6.redshift,
             ),
+            use_jax=use_jax,
         )
         assert gg_lens_2.external_shear >= 0
         assert isinstance(gg_lens_2.external_convergence, float)
@@ -1000,6 +1210,7 @@ class TestDifferentLens(object):
                 source_redshift=self.source6.redshift,
                 deflector_redshift=self.deflector6.redshift,
             ),
+            use_jax=use_jax,
         )
         assert gg_lens_3.external_convergence == 0
         assert gg_lens_3.external_shear == 0
@@ -1018,6 +1229,7 @@ class TestDifferentLens(object):
                     deflector_redshift=self.deflector6.redshift,
                     source_redshift=self.source6.redshift,
                 ),
+                use_jax=use_jax,
             )
             gg_lens_4.external_convergence()
 
@@ -1028,6 +1240,7 @@ class TestDifferentLens(object):
             deflector_class=self.deflector6,
             cosmo=self.cosmo,
             los_class=los,
+            use_jax=use_jax,
         )
         image_number = gg_lens_number.image_number
         assert (
@@ -1039,6 +1252,7 @@ class TestDifferentLens(object):
             deflector_class=self.deflector6,
             cosmo=self.cosmo,
             los_class=los,
+            use_jax=use_jax,
         )
         kwargs_model = gg_lens_multisource.lenstronomy_kwargs()[0]
         kwargs_model_keys = kwargs_model.keys()
@@ -1059,6 +1273,29 @@ class TestDifferentLens(object):
         assert expected_kwargs_model[4] in kwargs_model_keys
         assert expected_kwargs_model[5] in kwargs_model_keys
         assert expected_kwargs_model[6] in kwargs_model_keys
+
+    def test_multi_plane_setting(self):
+        mp_deflector_redshifts = self.lens_class_multi_source_plane.deflector_redshift
+        mp_lens_model, mp_kwargs_lens = (
+            self.lens_class_multi_source_plane.deflector_mass_model_lenstronomy()
+        )
+        # Test the lenght and values of the lens redshift list
+        number_of_models = len(mp_lens_model.lens_model_list)
+        assert mp_deflector_redshifts == [self.deflector6.redshift] * number_of_models
+
+        # Test multi-plane for nfw cluster model
+        nfw_mp_deflector_redshifts = (
+            self.lens_class_nfw_cluster_multi_source_plane.deflector_redshift
+        )
+        nfw_mp_lens_model, nfw_mp_kwargs_lens = (
+            self.lens_class_nfw_cluster_multi_source_plane.deflector_mass_model_lenstronomy()
+        )
+        # Test the lenght and values of the lens redshift list
+        number_of_models_nfw = len(nfw_mp_lens_model.lens_model_list)
+        assert (
+            nfw_mp_deflector_redshifts
+            != [self.deflector_nfw_cluster.redshift] * number_of_models_nfw
+        )
 
 
 @pytest.fixture
@@ -1099,6 +1336,7 @@ def supernovae_lens_instance_double_sersic_multisource():
             deflector_class=deflector,
             source_class=[source, source],
             cosmo=cosmo,
+            use_jax=use_jax,
         )
         if supernovae_lens.validity_test():
             supernovae_lens = supernovae_lens
@@ -1174,17 +1412,20 @@ class TestMultiSource(object):
             deflector_class=self.deflector,
             source_class=self.source1,
             cosmo=self.cosmo,
+            use_jax=use_jax,
         )
         self.lens_class2 = Lens(
             deflector_class=self.deflector,
             source_class=self.source2,
             cosmo=self.cosmo,
+            use_jax=use_jax,
         )
         self.lens_class3 = Lens(
             deflector_class=self.deflector,
             source_class=[self.source1, self.source2],
             cosmo=self.cosmo,
             lens_equation_solver="lenstronomy_general",
+            use_jax=use_jax,
         )
 
         self.lens_class3_analytical = Lens(
@@ -1192,7 +1433,9 @@ class TestMultiSource(object):
             source_class=[self.source1, self.source2],
             cosmo=self.cosmo,
             lens_equation_solver="lenstronomy_analytical",
+            use_jax=use_jax,
         )
+
         deflector_nfw_dict = {
             "halo_mass": 10**13,
             "halo_mass_acc": 0.0,
@@ -1215,6 +1458,7 @@ class TestMultiSource(object):
             source_class=self.source1,
             cosmo=self.cosmo,
             lens_equation_solver="lenstronomy_analytical",
+            use_jax=use_jax,
         )
 
     def test_point_source_arrival_time_multi(self):
@@ -1390,6 +1634,7 @@ class TestSlhammock(object):
             deflector_class=deflector,
             cosmo=self.cosmo,
             los_class=los_class,
+            use_jax=use_jax,
         )
 
     def test_theta_e_infinity(self):
