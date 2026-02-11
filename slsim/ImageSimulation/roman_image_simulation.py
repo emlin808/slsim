@@ -14,6 +14,7 @@ from slsim.Util.param_util import transformmatrix_to_pixelscale, convolved_image
 import os.path
 import pickle
 from stpsf.roman import WFI
+import random
 import warnings
 
 
@@ -40,20 +41,21 @@ def simulate_roman_image(
     lens_class,
     band,
     num_pix,
-    observatory="Roman",
     oversample=3,
     add_noise=True,
+    add_background_counts=True,
     with_source=True,
     with_deflector=True,
-    detector=1,
-    detector_pos=(2000, 2000),
+    exposure_time=None,
+    survey_mode="wide_area",
+    detector=None,
+    detector_pos=None,
     seed=None,
-    ra=30,
-    dec=-30,
+    ra=None,
+    dec=None,
     date=datetime.datetime(year=2027, month=7, day=7, hour=0, minute=0, second=0),
     psf_directory=None,
     galsim_convolve=True,
-    **kwargs,
 ):
     """Creates an image of a selected lens with noise.
 
@@ -64,21 +66,28 @@ def simulate_roman_image(
     :param num_pix: number of pixels per axis
     :type num_pix: integer
     :param add_noise: determines whether sky background and detector effects are added or not
-    :type add_background: bool
+    :type add_noise: bool
+    :param add_background_counts: whether to add the absolute count of photons on the background.
+     If =False; the mean background is subtracted (not the noise)
+    :type add_background_counts: bool
     :param with_source: determines whether source is included in image
     :type with_source: bool
     :param with_deflector: determines whether deflector is included in image
     :type with_deflector: bool
-    :param detector: The specific Roman detector being used to generate the psf
-    :type detector: integer from 1 to 18
-    :param detector_pos: The position of the detector being used to generate the psf
-    :type detector_pos: integer between 4 + num_pix * oversample and 4092 - num_pix * oversample
+    :param exposure_time: exposure time of image. If None, a default exposure time will be retrieved from lenstronomy's SimulationAPI.
+    :type exposure_time: int or None
+    :param survey_mode: survey mode of the Roman detector
+    :type survey_mode: string, can be "wide_area" or "time_domain"
+    :param detector: The specific WFI detector being used to generate the psf. If None, one will be selected at random
+    :type detector: integer from 1 to 18 or None
+    :param detector_pos: The pixel on the detector being used to generate the psf. If None, a coordinate will be selected at random.
+    :type detector_pos: 2-tuple of integers between 4 + num_pix * oversample and 4092 - num_pix * oversample or None
     :param seed: An rng seed used for generating detector effects in galsim
     :type seed: integer or None
     :param ra: Coordinate in space used to generate sky background
-    :type ra: float between 15 and 45
+    :type ra: float between 15 and 45 or None
     :param dec: Coordinate in space used to generate sky background
-    :type dec: float between -45 and -15
+    :type dec: float between -45 and -15 or None
     :param date: Date used to generate sky background
     :type date: datetime.datetime class
     :param psf_directory: Path to directory containing psf file(s) where the psf can be loaded.
@@ -86,11 +95,20 @@ def simulate_roman_image(
     :type psf_directory: string
     :param galsim_convolve: if True, uses GalSim for the numerics, otherwise uses lenstronomy
     :type galsim_convolve: bool
-    :param kwargs: additional keyword arguments for the bands
-    :type kwargs: dict
     :return: simulated image
     :rtype: 2d numpy array
     """
+
+    if detector is None:
+        detector = random.randint(1, 18)
+    if detector_pos is None:
+        x_pos = random.randint(4 + num_pix * oversample, 4092 - num_pix * oversample)
+        y_pos = random.randint(4 + num_pix * oversample, 4092 - num_pix * oversample)
+        detector_pos = (x_pos, y_pos)
+    if ra is None:
+        ra = random.uniform(15, 45)
+    if dec is None:
+        dec = random.uniform(-45, -15)
 
     # Perform all operations with an additional 3 pixel buffer on each side
     # to avoid edge effects, cropped out at the end
@@ -99,11 +117,16 @@ def simulate_roman_image(
     kwargs_model, kwargs_params = lens_class.lenstronomy_kwargs(band)
 
     kwargs_single_band = image_quality_lenstronomy.kwargs_single_band(
-        observatory=observatory, band=band, **kwargs
+        observatory="Roman", band=band, survey_mode=survey_mode
     )
     galsim_psf = get_psf(band, detector, detector_pos, oversample, psf_directory)
 
-    _exposure_time = kwargs_single_band["exposure_time"]
+    if exposure_time is None:
+        _exposure_time = (
+            kwargs_single_band["exposure_time"] * kwargs_single_band["num_exposures"]
+        )
+    else:
+        _exposure_time = exposure_time
 
     # Unconvolved image will be drawn at oversampled pixel scale
     kwargs_single_band_point_source = copy.deepcopy(kwargs_single_band)
@@ -128,7 +151,7 @@ def simulate_roman_image(
             "supersampling_factor": 1,
         }
         image_model = sim_api.image_model_class(kwargs_numerics)
-        # Draws the unconvolved image without point source
+        # Draws the unconvolved image with point source painted on single pixel
         array = _exposure_time * image_model.image(
             kwargs_lens=kwargs_lens,
             kwargs_source=kwargs_source,
@@ -189,7 +212,15 @@ def simulate_roman_image(
         # Obtain sky background corresponding to certain band and add it to the image
         # Requires stpsf data files to use
         image = add_roman_background(
-            image, band, detector, num_pix, _exposure_time, ra, dec, date
+            image,
+            band,
+            detector,
+            num_pix,
+            _exposure_time,
+            ra,
+            dec,
+            date,
+            add_background_counts=add_background_counts,
         )
 
         # Add detector effects and get the resulting array
@@ -256,7 +287,17 @@ def get_psf(band, detector, detector_pos, oversample, psf_directory):
     return galsim.InterpolatedImage(psf_image)
 
 
-def add_roman_background(image, band, detector, num_pix, exposure_time, ra, dec, date):
+def add_roman_background(
+    image,
+    band,
+    detector,
+    num_pix,
+    exposure_time,
+    ra,
+    dec,
+    date,
+    add_background_counts=True,
+):
     """Adds a sky and thermal background to image, corresponding to a specific
     band, detector, date, and coordinate in the sky.
 
@@ -275,6 +316,10 @@ def add_roman_background(image, band, detector, num_pix, exposure_time, ra, dec,
     :type dec: float between -45 and -15
     :param date: Date used to generate sky background
     :type date: datetime.datetime class
+    :param add_background_counts: whether to add the absolute count of
+        photons on the background. If =False; the mean background is
+        subtracted (not the noise)
+    :type add_background_counts: bool
     :return: image with added background
     :rtype: galsim Image class
     """
@@ -298,6 +343,9 @@ def add_roman_background(image, band, detector, num_pix, exposure_time, ra, dec,
 
     image = image + sky_image + thermal_bkg
     # image.quantize()
+    if not add_background_counts:
+        mean_bkg = np.mean(sky_image.array + thermal_bkg)
+        image -= mean_bkg
 
     return image
 
@@ -365,18 +413,21 @@ def lens_image_roman(
     mag_zero_point,
     num_pix,
     transform_pix2angle,
-    detector=1,
-    detector_pos=(2000, 2000),
+    survey_mode="wide_area",
+    exposure_time=None,
+    detector=None,
+    detector_pos=None,
     oversample=5,
     psf_directory=None,
     t_obs=None,
     with_source=True,
     with_deflector=True,
-    ra=30,
-    dec=-30,
+    ra=None,
+    dec=None,
     date=datetime.datetime(year=2027, month=7, day=7, hour=0, minute=0, second=0),
     add_noise=True,
     poisson_noise=True,
+    add_background_counts=True,
     seed=None,
 ):
     """Creates lens image on the basis of given information. It can simulate
@@ -392,10 +443,14 @@ def lens_image_roman(
     :param num_pix: number of pixels per axis
     :param transform_pix2angle: transformation matrix (2x2) of pixels
         into coordinate displacements
-    :param detector: The specific Roman detector being used to generate the psf
-    :type detector: integer from 1 to 18
-    :param detector_pos: The position of the detector being used to generate the psf
-    :type detector_pos: integer between 4 + num_pix * oversample and 4092 - num_pix * oversample
+    :param survey_mode: survey mode of the Roman detector, can be "wide_area" or "time_domain"
+    :type survey_mode: string
+    :param exposure_time: exposure time of image. If None, a default value will be retrieved from lenstronomy's SimulationAPI.
+    :type exposure_time: int or None
+    :param detector: The specific WFI detector being used to generate the psf. If None, one will be chosen at random
+    :type detector: integer from 1 to 18 or None
+    :param detector_pos: The pixel on the detector being used to generate the psf. If None, a random pixel will be chosen.
+    :type detector_pos: 2-tuple of integers between 4 + num_pix * oversample and 4092 - num_pix * oversample or None
     :param oversample: Number of times that each pixel's side is subdivided for higher
      accuracy psf convolution
     :type oversample: integer
@@ -412,20 +467,34 @@ def lens_image_roman(
     :param with_source: If True, simulates image with extended source in
         lens configuration.
     :param with_deflector: If True, simulates image with deflector.
-    :param ra: Coordinate in space used to generate sky background
-    :type ra: float between 15 and 45
-    :param dec: Coordinate in space used to generate sky background
-    :type dec: float between -45 and -15
+    :param ra: Coordinate in space used to generate sky background. If None, chooses random coordinate
+    :type ra: float between 15 and 45 or None
+    :param dec: Coordinate in space used to generate sky background. If None, chooses random coordinate
+    :type dec: float between -45 and -15 or None
     :param date: Date used to generate sky background
     :type date: datetime.datetime class
     :param add_noise: determines whether sky background and detector effects are added or not
-    :type add_background: bool
+    :type add_noise: bool
     :param poisson_noise: determines whether poisson noise is added or not
     :type poisson_noise: bool
+    :param add_background_counts: whether to add the absolute count of photons on the background.
+     If =False; the mean background is subtracted (not the noise)
     :param seed: An rng seed used for generating detector effects in galsim
     :type seed: integer or None
     :return: lens image in roman filter
     """
+
+    if detector is None:
+        detector = random.randint(1, 18)
+    if detector_pos is None:
+        x_pos = random.randint(4 + num_pix * oversample, 4092 - num_pix * oversample)
+        y_pos = random.randint(4 + num_pix * oversample, 4092 - num_pix * oversample)
+        detector_pos = (x_pos, y_pos)
+    if ra is None:
+        ra = random.uniform(15, 45)
+    if dec is None:
+        dec = random.uniform(-45, -15)
+
     delta_pix = transformmatrix_to_pixelscale(transform_pix2angle)
     psf_interp = get_psf(
         band=band,
@@ -460,14 +529,27 @@ def lens_image_roman(
     image_galsim = galsim.ImageF(image, scale=delta_pix)
     noise_galsim = galsim.ImageF(num_pix, num_pix, scale=delta_pix)
     kwargs_single_band = image_quality_lenstronomy.kwargs_single_band(
-        observatory="Roman", band=band
+        observatory="Roman", band=band, survey_mode=survey_mode
     )
-    _exposure_time = kwargs_single_band["exposure_time"]
+    if exposure_time is None:
+        _exposure_time = (
+            kwargs_single_band["exposure_time"] * kwargs_single_band["num_exposures"]
+        )
+    else:
+        _exposure_time = exposure_time
     if add_noise is True:
         # Obtain sky background corresponding to certain band and add it to the image
         # Requires stpsf data files to use
         noise_galsim = add_roman_background(
-            noise_galsim, band, detector, num_pix, _exposure_time, ra, dec, date
+            noise_galsim,
+            band,
+            detector,
+            num_pix,
+            _exposure_time,
+            ra,
+            dec,
+            date,
+            add_background_counts=add_background_counts,
         )
 
         # Add detector effects and get the resulting array
